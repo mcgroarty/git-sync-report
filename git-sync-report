@@ -336,7 +336,7 @@ class GitSyncReport:
         self.config = Config()
         self.scanner = RepositoryScanner(self.config)
     
-    def generate_report(self, verbose: bool = False, quiet: bool = False):
+    def generate_report(self, verbose: bool = False, quiet: bool = False, show_clean: bool = False):
         """Execute repository status report."""
         if not self.config.get_directories():
             print("No directories configured for monitoring. Use 'add <directory>' to begin.")
@@ -364,17 +364,22 @@ class GitSyncReport:
         
         for directory, repos in results.items():
             if repos:
-                if not quiet:
-                    print(f"📁 {directory}")
+                # By default, filter out up-to-date repos unless show_clean is enabled
+                filtered_repos = [repo for repo in repos if show_clean or repo.status != 'up_to_date']
                 
-                for i, repo in enumerate(repos):
+                # Always count all repos for statistics, but only display filtered ones
+                for repo in repos:
                     total_repos += 1
                     status_counts[repo.status] = status_counts.get(repo.status, 0) + 1
-                    
+                
+                if filtered_repos and not quiet:
+                    print(f"📁 {directory}")
+                
+                for i, repo in enumerate(filtered_repos):
                     emoji, status_text, details = repo.get_display_status()
                     
                     # Format the output line
-                    connector = "└──" if i == len(repos) - 1 else "├──"
+                    connector = "└──" if i == len(filtered_repos) - 1 else "├──"
                     branch_info = f"[{repo.branch}]" if repo.branch else ""
                     
                     if not quiet:
@@ -390,7 +395,7 @@ class GitSyncReport:
                                 print(f"    Remote: {repo.remote}")
                             print()
                 
-                if not quiet:
+                if filtered_repos and not quiet:
                     print()
             else:
                 if not quiet:
@@ -402,7 +407,10 @@ class GitSyncReport:
         if not quiet and total_repos > 0:
             print(f"Summary: {total_repos} repositories found")
             if status_counts['up_to_date'] > 0:
-                print(f"- {status_counts['up_to_date']} up to date")
+                if show_clean:
+                    print(f"- {status_counts['up_to_date']} up to date")
+                else:
+                    print(f"- {status_counts['up_to_date']} up to date (hidden)")
             if status_counts['uncommitted_changes'] > 0:
                 print(f"- {status_counts['uncommitted_changes']} with uncommitted changes")
             if status_counts['staged_changes'] > 0:
@@ -419,6 +427,11 @@ class GitSyncReport:
                 print(f"- {status_counts['detached']} in detached HEAD state")
             if status_counts['remote_access_issues'] > 0:
                 print(f"- {status_counts['remote_access_issues']} remote access limited")
+            
+            # Add note about hidden clean repos if they exist and aren't being shown
+            if not show_clean and status_counts['up_to_date'] > 0:
+                print()
+                print("Note: Up-to-date repositories are hidden by default. Use --show-clean to display them.")
     
     def add_directory(self, path: str):
         """Add directory to monitoring list, keep sorted, and show updated list with marker."""
@@ -526,14 +539,15 @@ def main():
     
     # Global options
     parser.add_argument('--version', action='version', version='git-sync-report 0.1')
+    parser.add_argument('--show-clean', action='store_true', help='Show up-to-date repositories in output (default: hidden)')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--quiet', '-q', action='store_true', help='Quiet output (errors only)')
     
     # Subcommands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
     
     # report command (default)
     report_parser = subparsers.add_parser('report', help='Generate repository status report (default)')
-    report_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
-    report_parser.add_argument('--quiet', '-q', action='store_true', help='Quiet output (errors only)')
     
     # add command
     add_parser = subparsers.add_parser('add', help='Add directory to monitoring list')
@@ -559,13 +573,16 @@ def main():
     
     app = GitSyncReport()
     
+    # Extract global flags
+    verbose = getattr(args, 'verbose', False)
+    quiet = getattr(args, 'quiet', False)
+    show_clean = getattr(args, 'show_clean', False)
+    
     # Handle commands
     command = args.command or 'report'  # Default to report if no command specified
     
     if command == 'report':
-        verbose = getattr(args, 'verbose', False)
-        quiet = getattr(args, 'quiet', False)
-        app.generate_report(verbose=verbose, quiet=quiet)
+        app.generate_report(verbose=verbose, quiet=quiet, show_clean=show_clean)
     elif command == 'add':
         app.add_directory(args.directory)
     elif command == 'remove':

@@ -40,8 +40,9 @@ Commands:
 Options:
   --help, -h              Show help message
   --version               Show program version and exit
-  --verbose, -v           Verbose output (for report command)
-  --quiet, -q             Quiet output (errors only, for report command)
+  --show-clean            Show up-to-date repositories in output (default: hidden)
+  --verbose, -v           Verbose output
+  --quiet, -q             Quiet output (errors only)
 ```
 
 ### First-Run and No-Directories Behavior

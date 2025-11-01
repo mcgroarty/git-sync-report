@@ -58,8 +58,9 @@ Commands:
 Options:
   --help, -h      Show help message
   --version       Show version information
-  --verbose, -v   Verbose output (for report command)
-  --quiet, -q     Quiet output, errors only (for report command)
+  --show-clean    Show up-to-date repositories in output (default: hidden)
+  --verbose, -v   Verbose output
+  --quiet, -q     Quiet output, errors only
 ```
 
 ## Example Output
@@ -69,23 +70,23 @@ Git Repository Status Report
 Generated: 2025-11-01 10:30:45
 
 📁 /Users/username/projects/
-├── 🟢 project1                 [main] ✓ Up to date
-├── 🟡 project2                 [develop] ⚠ 3 uncommitted files
+├──  project2                 [develop] ⚠ 3 uncommitted files
 ├── 🔵 project3                 [feature/new] ↑ 2 commits to push
 ├── 🟠 project4                 [main] ↓ 5 commits to pull
 └── 🔴 project5                 [main] ⚡ Diverged (2↑ 3↓)
 
 📁 /Users/username/work/
-├── 🟢 client-app              [main] ✓ Up to date
 └── ⚪ private-repo            [main] ❓ Cannot check remote (auth required)
 
 Summary: 7 repositories found
-- 2 up to date
+- 2 up to date (hidden)
 - 1 with uncommitted changes
 - 1 needs push
 - 1 needs pull
 - 1 diverged
 - 1 remote access limited
+
+Note: Up-to-date repositories are hidden by default. Use --show-clean to display them.
 ```
 
 ## Status Indicators
