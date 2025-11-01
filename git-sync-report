@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""
+Git Sync Report - A cross-platform Git repository monitoring tool
+
+Monitors synchronization status of Git repositories across multiple directories.
+Provides an overview of repository states including uncommitted changes,
+pending pulls/pushes, and synchronization status with remote repositories.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+"""
+
+import json
+import os
+import sys
+import subprocess
+from pathlib import Path
+from typing import List, Tuple, Dict, Optional, Any
+import argparse
+
+try:
+    import platformdirs
+    import git
+    from git.exc import GitCommandError, InvalidGitRepositoryError
+except ImportError as e:
+    print(f"Error: Required dependency not found: {e}")
+    print("Please install required packages:")
+    print("pip install click platformdirs gitpython")
+    sys.exit(1)
+
+
+class GitStatus:
+    """Represents the status of a Git repository."""
+    
+    def __init__(self, repo_path: str):
+        self.path = repo_path
+        self.repo_name = os.path.basename(repo_path)
+        self.branch = None
+        self.remote = None
+        self.status = 'unknown'
+        self.uncommitted = 0
+        self.staged = 0
+        self.unpushed = 0
+        self.unpulled = 0
+        self.is_clean = False
+        self.last_commit = None
+        self.remote_access_error = None
+        self.is_detached = False
+        self.has_remote = True
+        
+    def analyze(self):
+        """Perform comprehensive Git status analysis."""
+        try:
+            repo = git.Repo(self.path)
+            
+            # Get current branch info
+            if repo.head.is_detached:
+                self.is_detached = True
+                self.branch = f"HEAD detached at {repo.head.commit.hexsha[:7]}"
+            else:
+                self.branch = repo.active_branch.name
+            
+            # Check for remote
+            try:
+                if repo.remotes:
+                    self.remote = repo.remotes.origin.url if 'origin' in [r.name for r in repo.remotes] else repo.remotes[0].url
+                    self.has_remote = True
+                else:
+                    self.has_remote = False
+            except Exception:
+                self.has_remote = False
+            
+            # Check working directory status
+            self.uncommitted = len([item for item in repo.index.diff(None)])
+            self.staged = len([item for item in repo.index.diff("HEAD")])
+            self.is_clean = not repo.is_dirty()
+            
+            # Get last commit info
+            if repo.heads:
+                try:
+                    self.last_commit = {
+                        'message': repo.head.commit.message.strip(),
+                        'author': repo.head.commit.author.name,
+                        'date': repo.head.commit.committed_datetime.strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                except Exception:
+                    pass
+            
+            # Check remote status if we have a remote
+            if self.has_remote and not self.is_detached:
+                self._check_remote_status(repo)
+            
+            # Determine overall status
+            self._determine_status()
+            
+        except InvalidGitRepositoryError:
+            self.status = 'not_a_repo'
+        except Exception as e:
+            self.status = 'error'
+            self.remote_access_error = str(e)
+    
+    def _check_remote_status(self, repo):
+        """Check remote synchronization status with error handling."""
+        try:
+            # Try to fetch remote refs with timeout
+            if repo.remotes and not self.is_detached:
+                origin = repo.remotes.origin if 'origin' in [r.name for r in repo.remotes] else repo.remotes[0]
+                
+                # Get tracking branch
+                try:
+                    tracking_branch = repo.active_branch.tracking_branch()
+                    if tracking_branch:
+                        # Count commits ahead/behind
+                        commits_ahead = list(repo.iter_commits(f'{tracking_branch.name}..{repo.active_branch.name}'))
+                        commits_behind = list(repo.iter_commits(f'{repo.active_branch.name}..{tracking_branch.name}'))
+                        
+                        self.unpushed = len(commits_ahead)
+                        self.unpulled = len(commits_behind)
+                    else:
+                        # Branch has no upstream
+                        self.unpushed = len(list(repo.iter_commits(repo.active_branch.name))) if repo.active_branch.name != 'HEAD' else 0
+                        
+                except Exception as e:
+                    # Can't determine remote status - likely auth/network issue
+                    self.remote_access_error = "auth_required"
+                        
+        except Exception as e:
+            error_str = str(e).lower()
+            if any(term in error_str for term in ['authentication', 'permission denied', 'access denied']):
+                self.remote_access_error = "auth_required"
+            elif any(term in error_str for term in ['network', 'timeout', 'connection']):
+                self.remote_access_error = "network_issue" 
+            elif 'not found' in error_str:
+                self.remote_access_error = "repo_not_found"
+            else:
+                self.remote_access_error = "unknown_error"
+    
+    def _determine_status(self):
+        """Determine the overall repository status."""
+        if self.is_detached:
+            self.status = 'detached'
+        elif not self.has_remote:
+            self.status = 'no_remote'
+        elif self.remote_access_error:
+            self.status = 'remote_access_issues'
+        elif self.staged > 0:
+            self.status = 'staged_changes'
+        elif self.uncommitted > 0:
+            self.status = 'uncommitted_changes'
+        elif self.unpushed > 0 and self.unpulled > 0:
+            self.status = 'diverged'
+        elif self.unpushed > 0:
+            self.status = 'unpushed_commits'
+        elif self.unpulled > 0:
+            self.status = 'unpulled_changes'
+        else:
+            self.status = 'up_to_date'
+    
+    def get_display_status(self) -> Tuple[str, str, str]:
+        """Get formatted status for display: (emoji, status_text, details)."""
+        status_map = {
+            'up_to_date': ('🟢', '✓ Up to date', ''),
+            'uncommitted_changes': ('🟡', f'⚠ {self.uncommitted} uncommitted files', ''),
+            'staged_changes': ('🟡', '📝 Staged changes ready', ''),
+            'unpushed_commits': ('🔵', f'↑ {self.unpushed} commits to push', ''),
+            'unpulled_changes': ('🟠', f'↓ {self.unpulled} commits to pull', ''),
+            'diverged': ('🔴', f'⚡ Diverged ({self.unpushed}↑ {self.unpulled}↓)', ''),
+            'no_remote': ('⚪', '📡 No remote configured', ''),
+            'detached': ('🟣', '🔀 Detached HEAD', ''),
+            'remote_access_issues': ('⚪', '❓ Cannot check remote', f'({self.remote_access_error})'),
+            'not_a_repo': ('❌', '❌ Not a Git repository', ''),
+            'error': ('❌', '❌ Error accessing repository', f'({self.remote_access_error})')
+        }
+        
+        emoji, text, details = status_map.get(self.status, ('❓', 'Unknown status', ''))
+        return emoji, text, details
+
+
+class Config:
+    """Configuration manager for git-sync-report."""
+    
+    def __init__(self):
+        self.config_dir = Path(platformdirs.user_config_dir("git-sync-report"))
+        self.config_file = self.config_dir / "config.json"
+        self.directories = []
+        self.settings = {
+            "editor": "auto",
+            "ignore_patterns": [".git", "node_modules", "__pycache__"]
+        }
+        self.version = "0.1"
+        
+        # Ensure config directory exists
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Load existing config
+        self.load()
+    
+    def load(self):
+        """Load configuration from file."""
+        if self.config_file.exists():
+            try:
+                with open(self.config_file, 'r') as f:
+                    data = json.load(f)
+                    self.directories = data.get('directories', [])
+                    self.settings = data.get('settings', self.settings)
+                    self.version = data.get('version', self.version)
+            except (json.JSONDecodeError, IOError) as e:
+                print(f"Warning: Error loading config file: {e}")
+                print("Using default configuration.")
+    
+    def save(self):
+        """Save configuration to file."""
+        config_data = {
+            "version": "0.1",  # Always use current version when saving
+            "settings": self.settings,
+            "directories": sorted(self.directories)  # Always keep sorted
+        }
+        
+        try:
+            with open(self.config_file, 'w') as f:
+                json.dump(config_data, f, indent=2)
+        except IOError as e:
+            print(f"Error: Cannot save configuration: {e}")
+            sys.exit(1)
+    
+    def get_directories(self) -> List[str]:
+        """Get list of monitored directories."""
+        return self.directories.copy()
+    
+    def add_directory(self, path: str) -> Tuple[bool, str, List[Tuple[int, str]], Optional[int]]:
+        """Add directory and maintain sorted order, return info for display."""
+        normalized_path = os.path.abspath(os.path.expanduser(path))
+        
+        if not os.path.exists(normalized_path):
+            return False, f"Directory does not exist: {normalized_path}", [], None
+        
+        if not os.path.isdir(normalized_path):
+            return False, f"Path is not a directory: {normalized_path}", [], None
+            
+        if normalized_path not in self.directories:
+            self.directories.append(normalized_path)
+            self.directories.sort()  # Keep alphabetically sorted
+            self.save()
+            # Find index of newly added directory for marker
+            new_index = self.directories.index(normalized_path) + 1
+            return True, normalized_path, self.list_directories(), new_index
+        
+        return False, f"Directory already monitored: {normalized_path}", [], None
+    
+    def remove_directory(self, index: int) -> Tuple[str, List[Tuple[int, str]]]:
+        """Remove directory by index number (1-based) and return info for display."""
+        if 1 <= index <= len(self.directories):
+            removed = self.directories.pop(index - 1)
+            self.save()
+            return removed, self.list_directories()
+        
+        # Invalid index - show list, print error, and exit
+        print(f"Error: Invalid directory number: {index}")
+        print("\nCurrent directories:")
+        for i, dir_path in enumerate(self.directories, 1):
+            print(f"{i}. {dir_path}")
+        sys.exit(1)
+    
+    def list_directories(self) -> List[Tuple[int, str]]:
+        """Get numbered list of directories for display."""
+        return [(i + 1, dir_path) for i, dir_path in enumerate(self.directories)]
+    
+    def list_directories_with_marker(self, marker_index: Optional[int] = None) -> List[Tuple[int, str, str]]:
+        """Get numbered list with optional marker for newly added/changed item."""
+        result = []
+        for i, dir_path in enumerate(self.directories):
+            number = i + 1
+            marker = " ← NEW" if marker_index and number == marker_index else ""
+            result.append((number, dir_path, marker))
+        return result
+
+
+class RepositoryScanner:
+    """Scans directories for Git repositories and analyzes their status."""
+    
+    def __init__(self, config: Config):
+        self.config = config
+    
+    def scan_directories(self) -> Dict[str, List[GitStatus]]:
+        """Scan all configured directories for Git repositories."""
+        results = {}
+        
+        for directory in self.config.get_directories():
+            if os.path.exists(directory):
+                repos = self.find_git_repos(directory)
+                # Sort repositories alphabetically by name (case-insensitive)
+                repos.sort(key=lambda r: r.repo_name.lower())
+                results[directory] = repos
+            else:
+                print(f"Warning: Directory not found: {directory}")
+                
+        return results
+    
+    def find_git_repos(self, directory: str) -> List[GitStatus]:
+        """Recursively find Git repositories in directory, skipping ignore patterns."""
+        repos = []
+        ignore_patterns = self.config.settings.get('ignore_patterns', ['.git', 'node_modules', '__pycache__'])
+        
+        try:
+            for root, dirs, files in os.walk(directory):
+                # Check if current directory is a Git repository BEFORE filtering
+                if '.git' in dirs or '.git' in files:
+                    git_status = GitStatus(root)
+                    git_status.analyze()
+                    repos.append(git_status)
+                
+                # Now filter out directories we don't want to recurse into
+                dirs[:] = [d for d in dirs if d not in ignore_patterns]
+                        
+        except PermissionError:
+            print(f"Warning: Permission denied accessing: {directory}")
+        except Exception as e:
+            print(f"Warning: Error scanning directory {directory}: {e}")
+            
+        return repos
+
+
+class GitSyncReport:
+    """Main application class for git-sync-report."""
+    
+    def __init__(self):
+        self.config = Config()
+        self.scanner = RepositoryScanner(self.config)
+    
+    def generate_report(self, verbose: bool = False, quiet: bool = False):
+        """Execute repository status report."""
+        if not self.config.get_directories():
+            print("No directories configured for monitoring. Use 'add <directory>' to begin.")
+            sys.exit(1)
+            
+        results = self.scanner.scan_directories()
+        
+        if not quiet:
+            print("Git Repository Status Report")
+            print(f"Generated: {self._get_timestamp()}")
+            print()
+        
+        total_repos = 0
+        status_counts = {
+            'up_to_date': 0,
+            'uncommitted_changes': 0,
+            'staged_changes': 0,
+            'unpushed_commits': 0,
+            'unpulled_changes': 0,
+            'diverged': 0,
+            'no_remote': 0,
+            'detached': 0,
+            'remote_access_issues': 0
+        }
+        
+        for directory, repos in results.items():
+            if repos:
+                if not quiet:
+                    print(f"📁 {directory}")
+                
+                for i, repo in enumerate(repos):
+                    total_repos += 1
+                    status_counts[repo.status] = status_counts.get(repo.status, 0) + 1
+                    
+                    emoji, status_text, details = repo.get_display_status()
+                    
+                    # Format the output line
+                    connector = "└──" if i == len(repos) - 1 else "├──"
+                    branch_info = f"[{repo.branch}]" if repo.branch else ""
+                    
+                    if not quiet:
+                        if details:
+                            print(f"{connector} {emoji} {repo.repo_name:<20} {branch_info} {status_text} {details}")
+                        else:
+                            print(f"{connector} {emoji} {repo.repo_name:<20} {branch_info} {status_text}")
+                        
+                        if verbose and repo.last_commit:
+                            print(f"    Last commit: {repo.last_commit['message'][:60]}...")
+                            print(f"    Author: {repo.last_commit['author']} ({repo.last_commit['date']})")
+                            if repo.remote:
+                                print(f"    Remote: {repo.remote}")
+                            print()
+                
+                if not quiet:
+                    print()
+            else:
+                if not quiet:
+                    print(f"📁 {directory}")
+                    print("└── (no Git repositories found)")
+                    print()
+        
+        # Summary
+        if not quiet and total_repos > 0:
+            print(f"Summary: {total_repos} repositories found")
+            if status_counts['up_to_date'] > 0:
+                print(f"- {status_counts['up_to_date']} up to date")
+            if status_counts['uncommitted_changes'] > 0:
+                print(f"- {status_counts['uncommitted_changes']} with uncommitted changes")
+            if status_counts['staged_changes'] > 0:
+                print(f"- {status_counts['staged_changes']} with staged changes")
+            if status_counts['unpushed_commits'] > 0:
+                print(f"- {status_counts['unpushed_commits']} need push")
+            if status_counts['unpulled_changes'] > 0:
+                print(f"- {status_counts['unpulled_changes']} need pull")
+            if status_counts['diverged'] > 0:
+                print(f"- {status_counts['diverged']} diverged")
+            if status_counts['no_remote'] > 0:
+                print(f"- {status_counts['no_remote']} without remotes")
+            if status_counts['detached'] > 0:
+                print(f"- {status_counts['detached']} in detached HEAD state")
+            if status_counts['remote_access_issues'] > 0:
+                print(f"- {status_counts['remote_access_issues']} remote access limited")
+    
+    def add_directory(self, path: str):
+        """Add directory to monitoring list, keep sorted, and show updated list with marker."""
+        success, message, dirs_list, new_index = self.config.add_directory(path)
+        
+        if success:
+            print(f"Added: {message}")
+            print()
+            print("Monitored directories:")
+            dirs_with_marker = self.config.list_directories_with_marker(new_index)
+            for num, dir_path, marker in dirs_with_marker:
+                print(f"{num}. {dir_path}{marker}")
+        else:
+            print(f"Error: {message}")
+            sys.exit(1)
+    
+    def remove_directory(self, index: int):
+        """Remove directory from monitoring list by index number and show updated list."""
+        removed_path, updated_list = self.config.remove_directory(index)
+        
+        print(f"Removed: {removed_path}")
+        print()
+        print("Updated monitored directories:")
+        for num, dir_path in updated_list:
+            print(f"{num}. {dir_path}")
+    
+    def list_directories(self):
+        """List all monitored directories with numbers."""
+        dirs_list = self.config.list_directories()
+        
+        if dirs_list:
+            print("Monitored directories:")
+            for num, dir_path in dirs_list:
+                print(f"{num}. {dir_path}")
+        else:
+            print("No directories configured for monitoring. Use 'add <directory>' to begin.")
+    
+    def config_show(self):
+        """Display current configuration and file location."""
+        print(f"Configuration File: {self.config.config_file}")
+        print()
+        print("Current Configuration:")
+        config_data = {
+            "version": self.config.version,
+            "settings": self.config.settings,
+            "directories": self.config.directories
+        }
+        print(json.dumps(config_data, indent=2))
+    
+    def config_edit(self):
+        """Launch editor for directory list."""
+        # Editor selection order: $EDITOR → vi → notepad.exe (Windows) → TextEdit (macOS)
+        editors = []
+        
+        # Check environment variable first
+        if os.environ.get('EDITOR'):
+            editors.append(os.environ['EDITOR'])
+        
+        # Platform-specific defaults
+        if sys.platform == 'win32':
+            editors.extend(['notepad.exe', 'notepad'])
+        elif sys.platform == 'darwin':
+            editors.extend(['vi', 'nano', 'open -t'])
+        else:
+            editors.extend(['vi', 'nano'])
+        
+        editor_found = False
+        for editor in editors:
+            try:
+                # For 'open -t' on macOS, we need special handling
+                if editor == 'open -t':
+                    subprocess.run(['open', '-t', str(self.config.config_file)], check=True)
+                else:
+                    subprocess.run([editor, str(self.config.config_file)], check=True)
+                editor_found = True
+                break
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                continue
+        
+        if not editor_found:
+            print("Error: Cannot find suitable editor")
+            print("Please set the EDITOR environment variable to your preferred editor")
+            print(f"Example: export EDITOR=nano")
+            print(f"Configuration file location: {self.config.config_file}")
+            sys.exit(1)
+        
+        # Reload config after editing
+        self.config.load()
+    
+    def _get_timestamp(self) -> str:
+        """Get current timestamp for reports."""
+        from datetime import datetime
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def main():
+    """Main entry point with command-line interface."""
+    parser = argparse.ArgumentParser(
+        prog='git-sync-report',
+        description='Monitor synchronization status of Git repositories across multiple directories',
+        epilog='Version 0.1 - Licensed under Apache License 2.0\n'
+               'Report bugs and request enhancements at:\n'
+               'https://github.com/mcgroarty/git-sync-report/issues'
+    )
+    
+    # Global options
+    parser.add_argument('--version', action='version', version='git-sync-report 0.1')
+    
+    # Subcommands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # report command (default)
+    report_parser = subparsers.add_parser('report', help='Generate repository status report (default)')
+    report_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    report_parser.add_argument('--quiet', '-q', action='store_true', help='Quiet output (errors only)')
+    
+    # add command
+    add_parser = subparsers.add_parser('add', help='Add directory to monitoring list')
+    add_parser.add_argument('directory', help='Directory path to add')
+    
+    # remove command
+    remove_parser = subparsers.add_parser('remove', help='Remove directory by number')
+    remove_parser.add_argument('number', type=int, help='Directory number (from list command)')
+    
+    # list command
+    list_parser = subparsers.add_parser('list', help='Show currently monitored directories with numbers')
+    
+    # config-edit command
+    config_edit_parser = subparsers.add_parser('config-edit', help='Edit directory list in default editor')
+    
+    # config-show command
+    config_show_parser = subparsers.add_parser('config-show', help='Show current configuration and file location')
+    
+    # help command
+    help_parser = subparsers.add_parser('help', help='Show help information')
+    
+    args = parser.parse_args()
+    
+    app = GitSyncReport()
+    
+    # Handle commands
+    command = args.command or 'report'  # Default to report if no command specified
+    
+    if command == 'report':
+        verbose = getattr(args, 'verbose', False)
+        quiet = getattr(args, 'quiet', False)
+        app.generate_report(verbose=verbose, quiet=quiet)
+    elif command == 'add':
+        app.add_directory(args.directory)
+    elif command == 'remove':
+        app.remove_directory(args.number)
+    elif command == 'list':
+        app.list_directories()
+    elif command == 'config-edit':
+        app.config_edit()
+    elif command == 'config-show':
+        app.config_show()
+    elif command == 'help':
+        parser.print_help()
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    main()

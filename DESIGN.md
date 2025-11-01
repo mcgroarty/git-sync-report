@@ -39,9 +39,9 @@ Commands:
 
 Options:
   --help, -h              Show help message
-  --config-dir            Show configuration directory location
-  --verbose, -v           Verbose output
-  --quiet, -q             Quiet output (errors only)
+  --version               Show program version and exit
+  --verbose, -v           Verbose output (for report command)
+  --quiet, -q             Quiet output (errors only, for report command)
 ```
 
 ### First-Run and No-Directories Behavior
@@ -111,7 +111,7 @@ git-sync-report config-show
 # 
 # Current Configuration:
 # {
-#   "version": "1.0",
+#   "version": "0.1",
 #   "settings": {
 #     "editor": "auto",
 #     "ignore_patterns": [".git", "node_modules", "__pycache__"]
@@ -136,7 +136,7 @@ Uses `platformdirs` library for cross-platform configuration directories:
 #### Configuration Schema
 ```json
 {
-  "version": "1.0",
+  "version": "0.1",
   "settings": {
     "editor": "auto",
     "ignore_patterns": [".git", "node_modules", "__pycache__"]
@@ -309,11 +309,16 @@ class GitStatus:
 ### Dependencies
 
 #### Required Python Packages
-- `click`: Command-line interface framework
 - `platformdirs`: Cross-platform directory paths
 - `gitpython`: Git repository interaction
-- `colorama`: Cross-platform colored terminal output
-- `rich`: Enhanced terminal formatting (optional)
+
+#### Built-in Python Modules Used
+- `argparse`: Command-line interface framework
+- `json`: Configuration file handling
+- `os`: File system operations
+- `sys`: System-specific parameters
+- `subprocess`: External editor launching
+- `pathlib`: Modern path handling
 
 #### Development Dependencies
 - `pytest`: Testing framework
