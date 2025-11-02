@@ -38,6 +38,19 @@ except ImportError as e:
     sys.exit(1)
 
 
+# ANSI color codes for terminal output
+class Colors:
+    """ANSI color codes for terminal output."""
+    GREEN = '\033[32m'      # Green for up to date
+    YELLOW = '\033[33m'     # Yellow for uncommitted/staged changes
+    BLUE = '\033[34m'       # Blue for unpushed commits
+    RED = '\033[31m'        # Red for diverged/errors
+    MAGENTA = '\033[35m'    # Magenta/Purple for detached HEAD
+    WHITE = '\033[37m'      # White for no remote/access issues
+    ORANGE = '\033[91m'     # Bright red/orange for unpulled changes
+    RESET = '\033[0m'       # Reset color
+
+
 class GitStatus:
     """Represents the status of a Git repository."""
     
@@ -168,20 +181,20 @@ class GitStatus:
     def get_display_status(self) -> Tuple[str, str, str]:
         """Get formatted status for display: (emoji, status_text, details)."""
         status_map = {
-            'up_to_date': ('🟢', '✓ Up to date', ''),
-            'uncommitted_changes': ('🟡', f'⚠ {self.uncommitted} uncommitted files', ''),
-            'staged_changes': ('🟡', '📝 Staged changes ready', ''),
-            'unpushed_commits': ('🔵', f'↑ {self.unpushed} commits to push', ''),
-            'unpulled_changes': ('🟠', f'↓ {self.unpulled} commits to pull', ''),
-            'diverged': ('🔴', f'⚡ Diverged ({self.unpushed}↑ {self.unpulled}↓)', ''),
-            'no_remote': ('⚪', '📡 No remote configured', ''),
-            'detached': ('🟣', '🔀 Detached HEAD', ''),
-            'remote_access_issues': ('⚪', '❓ Cannot check remote', f'({self.remote_access_error})'),
-            'not_a_repo': ('❌', '❌ Not a Git repository', ''),
-            'error': ('❌', '❌ Error accessing repository', f'({self.remote_access_error})')
+            'up_to_date': (f'{Colors.GREEN}🟢{Colors.RESET}', '✓ Up to date', ''),
+            'uncommitted_changes': (f'{Colors.YELLOW}🟡{Colors.RESET}', f'⚠ {self.uncommitted} uncommitted files', ''),
+            'staged_changes': (f'{Colors.YELLOW}🟡{Colors.RESET}', '📝 Staged changes ready', ''),
+            'unpushed_commits': (f'{Colors.BLUE}🔵{Colors.RESET}', f'↑ {self.unpushed} commits to push', ''),
+            'unpulled_changes': (f'{Colors.ORANGE}🟠{Colors.RESET}', f'↓ {self.unpulled} commits to pull', ''),
+            'diverged': (f'{Colors.RED}🔴{Colors.RESET}', f'⚡ Diverged ({self.unpushed}↑ {self.unpulled}↓)', ''),
+            'no_remote': (f'{Colors.WHITE}⚪{Colors.RESET}', '📡 No remote configured', ''),
+            'detached': (f'{Colors.MAGENTA}🟣{Colors.RESET}', '🔀 Detached HEAD', ''),
+            'remote_access_issues': (f'{Colors.WHITE}⚪{Colors.RESET}', '❓ Cannot check remote', f'({self.remote_access_error})'),
+            'not_a_repo': (f'{Colors.RED}❌{Colors.RESET}', '❌ Not a Git repository', ''),
+            'error': (f'{Colors.RED}❌{Colors.RESET}', '❌ Error accessing repository', f'({self.remote_access_error})')
         }
         
-        emoji, text, details = status_map.get(self.status, ('❓', 'Unknown status', ''))
+        emoji, text, details = status_map.get(self.status, (f'{Colors.WHITE}❓{Colors.RESET}', 'Unknown status', ''))
         return emoji, text, details
 
 
@@ -548,6 +561,9 @@ def main():
     
     # report command (default)
     report_parser = subparsers.add_parser('report', help='Generate repository status report (default)')
+    report_parser.add_argument('--show-clean', action='store_true', help='Show up-to-date repositories in output (default: hidden)')
+    report_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    report_parser.add_argument('--quiet', '-q', action='store_true', help='Quiet output (errors only)')
     
     # add command
     add_parser = subparsers.add_parser('add', help='Add directory to monitoring list')
